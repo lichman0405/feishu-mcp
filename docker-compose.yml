@@ -1,0 +1,31 @@
+services:
+  # Feishu event listener (long-connection WebSocket, runs 24/7)
+  feishu-listener:
+    build: .
+    image: feishu-miqroera-mcp
+    container_name: feishu-listener
+    command: ["feishu_mcp.webhook.longconn"]
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./.env:/app/.env:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # MCP Server (called via stdio by AI Agent; usually does not need its own container)
+  # Usage: docker compose run --rm feishu-mcp
+  feishu-mcp:
+    build: .
+    image: feishu-miqroera-mcp
+    container_name: feishu-mcp
+    command: ["feishu_mcp.server"]
+    env_file: .env
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./.env:/app/.env:ro
+    profiles:
+      - mcp   # disabled by default; start with: docker compose --profile mcp run feishu-mcp

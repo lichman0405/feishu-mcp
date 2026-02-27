@@ -1,0 +1,229 @@
+﻿"""
+tests/integration/test_stage6_e2e.py
+Stage 6 End-to-End Integration Test — Three User Story Full Flows
+
+User Story 1: Create group event + invite attendees
+User Story 2: Create task + assign to group member by name
+User Story 3: Generate research report document + upload attachment + send group notification
+
+Usage:
+  python tests/integration/test_stage6_e2e.py
+"""
+
+import sys, json, os, tempfile
+sys.path.insert(0, "src")
+
+CHAT_ID = "oc_2ed2973a91574e4033c7eac08ffe8c6e"
+
+def section(title):
+    print(f"\n{'#'*60}")
+    print(f"  {title}")
+    print('#'*60)
+
+def step(label): print(f"\n  -- {label}")
+def ok(msg): print(f"     ✅ {msg}")
+def fail(msg): print(f"     ❌ {msg}"); sys.exit(1)
+def info(msg): print(f"     ℹ  {msg}")
+
+
+# ═══════════════════════════════════════════════════
+# Common: Get group members
+# ═══════════════════════════════════════════════════
+from feishu_mcp.tools.users import get_chat_members, resolve_users_by_name
+
+step("Get group members (common step)")
+members = get_chat_members(CHAT_ID)
+if not members:
+    fail("Group member list is empty")
+target = members[0]
+info(f"Test member: {target['name']} ({target['open_id']})")
+
+
+# ═══════════════════════════════════════════════════
+# User Story 1: Create group event + invite attendees
+# ═══════════════════════════════════════════════════
+section("User Story 1 — Create Group Event + Invite Attendees")
+
+from feishu_mcp.tools.calendar import (
+    get_or_create_group_calendar,
+    create_calendar_event,
+    add_event_attendees,
+)
+from feishu_mcp.tools.messages import send_message, build_text_with_at
+
+step("1.1 Get or create group shared calendar")
+calendar_id = get_or_create_group_calendar(CHAT_ID)
+ok(f"calendar_id={calendar_id}")
+
+step("1.2 Create event (with video meeting)")
+event = create_calendar_event(
+    calendar_id=calendar_id,
+    summary="[E2E Test] Weekly Project Meeting — Auto-created by MCP",
+    start_time="2026-03-15T14:00:00+08:00",
+    end_time="2026-03-15T15:00:00+08:00",
+    description="Weekly project meeting auto-created by Feishu MCP Server. Please be on time.",
+    is_online=True,
+    use_user_token=False,
+)
+event_id = event["event_id"]
+ok(f"Event created: event_id={event_id}")
+
+step("1.3 Invite group members as attendees")
+attendee_ids = [m["open_id"] for m in members]
+add_event_attendees(
+    calendar_id=calendar_id,
+    event_id=event_id,
+    attendee_open_ids=attendee_ids,
+    use_user_token=False,
+)
+ok(f"Invited {len(attendee_ids)} attendee(s)")
+
+step("1.4 Send group notification message")
+notice = build_text_with_at(
+    "[Schedule] Weekly Project Meeting has been scheduled (Mar 15, 14:00). Please check your calendar."
+)
+send_message("chat_id", CHAT_ID, notice, "text")
+ok("Group notification sent")
+
+
+# ═══════════════════════════════════════════════════
+# User Story 2: Create task + assign by name
+# ═══════════════════════════════════════════════════
+section("User Story 2 — Create Task + Assign to Group Member by Name")
+
+from feishu_mcp.tools.tasks import create_task, assign_task
+
+step("2.1 Resolve member open_id by name")
+target_name = target["name"]
+resolved = resolve_users_by_name(CHAT_ID, [target_name])
+target_id = resolved.get(target_name)
+if not target_id:
+    fail(f"Unable to resolve '{target_name}'")
+ok(f"'{target_name}' → {target_id}")
+
+step("2.2 Create task")
+task = create_task(
+    title=f"[E2E Test] Complete pre-meeting research — Assignee: {target_name}",
+    description="Before the weekly meeting, please complete the competitive analysis report and upload it to Drive.",
+    due_time="2026-03-14T18:00:00Z",
+)
+task_guid = task["guid"]
+ok(f"Task created: guid={task_guid}")
+
+step("2.3 Assign to member")
+assign_task(task_guid, [target_id])
+ok(f"Task assigned to {target_name}")
+
+step("2.4 Send group notification")
+task_url = task.get("url", "")
+msg = build_text_with_at(
+    f"[Task Assigned] Pre-meeting research task assigned to {target_name}. Due Mar 14, 18:00. Please handle promptly."
+)
+send_message("chat_id", CHAT_ID, msg, "text")
+ok("Task notification sent")
+
+
+# ═══════════════════════════════════════════════════
+# User Story 3: Generate report + upload + send link
+# ═══════════════════════════════════════════════════
+section("User Story 3 — Generate Research Report + Upload Attachment + Send Group Message")
+
+from feishu_mcp.tools.documents import (
+    create_document,
+    write_document_markdown,
+    upload_file,
+)
+
+step("3.1 Create research report document")
+doc = create_document(title="[E2E Test] Competitive Analysis Report")
+doc_id = doc["document_id"]
+ok(f"Document created: document_id={doc_id}")
+
+step("3.2 Write report content (Markdown)")
+report_md = f"""# Competitive Analysis Report
+
+## Summary
+
+This report was auto-generated by Feishu MCP Server to outline the key features of major competitors.
+
+## Research Subjects
+
+1. Competitor A — Feature-complete, 40% market share
+2. Competitor B — Low-price strategy, growing rapidly
+3. Competitor C — Vertical niche focus, high user retention
+
+## Core Comparison
+
+- **Price**: We have a clear advantage
+- **Features**: On par with Competitor A, leading in some areas
+- **Service**: Response time 30% faster than industry average
+
+## Conclusion
+
+Recommend discussing differentiated competitive strategy at the next weekly meeting.
+
+---
+
+Report generated: 2026-03-14  |  Tool: Feishu MCP Server
+"""
+result = write_document_markdown(doc_id, report_md)
+ok(f"Wrote {result.get('blocks_created', '?')} block(s)")
+
+step("3.3 Upload attachment (simulated CSV data file)")
+with tempfile.NamedTemporaryFile(
+    mode="w", suffix=".txt", delete=False, encoding="utf-8"
+) as f:
+    f.write("Competitor,Price,Feature Score,Market Share\n")
+    f.write("Competitor A,199,8.5,40%\n")
+    f.write("Competitor B,99,7.0,25%\n")
+    f.write("Competitor C,149,8.0,20%\n")
+    f.write("Us,169,8.8,15%\n")
+    tmp_path = f.name
+
+try:
+    upload_result = upload_file(file_path=tmp_path, parent_type="explorer")
+    file_token = upload_result.get("file_token", "")
+    ok(f"Attachment uploaded: file_token={file_token}")
+finally:
+    os.unlink(tmp_path)
+
+step("3.4 Send group message with document link")
+doc_link = f"https://feishu.cn/docx/{doc_id}"
+msg = build_text_with_at(
+    f"[Report Ready] Competitive analysis report is available. Please review: {doc_link}"
+)
+send_message("chat_id", CHAT_ID, msg, "text")
+ok("Document link sent to group")
+
+
+# ═══════════════════════════════════════════════════
+# Summary
+# ═══════════════════════════════════════════════════
+section("Stage 6 End-to-End Acceptance Results")
+
+print("""
+  User Story 1 — Create Group Event + Invite Attendees
+    ✅ Get/create group shared calendar
+    ✅ Create event with video meeting
+    ✅ Invite all group members
+    ✅ Send group notification
+
+  User Story 2 — Create Task + Assign by Name
+    ✅ Resolve group member open_id by name
+    ✅ Create task with due time
+    ✅ Assign to specified member
+    ✅ Send group notification
+
+  User Story 3 — Research Report + Attachment + Notification
+    ✅ Create cloud document
+    ✅ Write Markdown report content
+    ✅ Upload data attachment file
+    ✅ Send group message with document link
+""")
+
+print(f"  📋 Calendar: {calendar_id}")
+print(f"  📋 Event:    {event_id}")
+print(f"  📋 Task:     {task_guid}")
+print(f"  📋 Document: https://feishu.cn/docx/{doc_id}")
+print()
+print("  ✅ All stages accepted! Feishu MCP Server is ready.")
