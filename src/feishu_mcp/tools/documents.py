@@ -38,10 +38,20 @@ def _post(path: str, payload: dict, params: dict | None = None) -> dict:
     url = f"{FEISHU_BASE_URL}{path}"
     with httpx.Client(timeout=30) as client:
         resp = client.post(url, headers=get_auth_headers(), json=payload, params=params or {})
+    # Read body first so Feishu error details are not lost on HTTP 4xx/5xx
+    try:
+        data = resp.json()
+    except Exception:
         resp.raise_for_status()
-    data = resp.json()
+        raise RuntimeError(f"Feishu API [{path}]: HTTP {resp.status_code}, non-JSON body")
     if data.get("code") != 0:
-        raise RuntimeError(f"Feishu API error [{path}]: code={data['code']}, msg={data.get('msg')}")
+        raise RuntimeError(
+            f"Feishu API error [{path}]: code={data.get('code')}, msg={data.get('msg')}"
+        )
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"Feishu API [{path}]: HTTP {resp.status_code}, body={data}"
+        )
     return data
 
 
@@ -49,10 +59,20 @@ def _patch(path: str, payload: dict) -> dict:
     url = f"{FEISHU_BASE_URL}{path}"
     with httpx.Client(timeout=15) as client:
         resp = client.patch(url, headers=get_auth_headers(), json=payload)
+    try:
+        data = resp.json()
+    except Exception:
         resp.raise_for_status()
-    data = resp.json()
+        raise RuntimeError(f"Feishu API [{path}]: HTTP {resp.status_code}, non-JSON body")
     if data.get("code") != 0:
-        raise RuntimeError(f"Feishu API error [{path}]: code={data['code']}, msg={data.get('msg')}")
+        raise RuntimeError(
+            f"Feishu API error [{path}]: code={data.get('code')}, msg={data.get('msg')}"
+        )
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"Feishu API [{path}]: HTTP {resp.status_code}, body={data}"
+        )
+    return data
     return data
 
 
@@ -60,10 +80,19 @@ def _get(path: str, params: dict | None = None) -> dict:
     url = f"{FEISHU_BASE_URL}{path}"
     with httpx.Client(timeout=15) as client:
         resp = client.get(url, headers=get_auth_headers(), params=params or {})
+    try:
+        data = resp.json()
+    except Exception:
         resp.raise_for_status()
-    data = resp.json()
+        raise RuntimeError(f"Feishu API [{path}]: HTTP {resp.status_code}, non-JSON body")
     if data.get("code") != 0:
-        raise RuntimeError(f"Feishu API error [{path}]: code={data['code']}, msg={data.get('msg')}")
+        raise RuntimeError(
+            f"Feishu API error [{path}]: code={data.get('code')}, msg={data.get('msg')}"
+        )
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"Feishu API [{path}]: HTTP {resp.status_code}, body={data}"
+        )
     return data
 
 
@@ -140,17 +169,33 @@ def write_document_markdown(document_id: str, markdown_content: str) -> dict:
         logger.warning("write_document_markdown: parsed block list is empty, skipping write")
         return {}
 
-    payload = {
-        "children": blocks,
-        "index": -1,  # -1 means append to end of document
-    }
-    # Feishu Block API: root page block_id = document_id
-    data = _post(
-        f"/open-apis/docx/v1/documents/{document_id}/blocks/{document_id}/children",
-        payload,
-    )
-    logger.info("Wrote %d blocks to document %s", len(blocks), document_id)
-    return {"blocks_created": len(blocks), **data.get("data", {})}
+    # Feishu API limits: max 50 children per request, max 3 edits/sec per document.
+    # Split into batches of 50 blocks.
+    import time as _time
+
+    BATCH_SIZE = 50
+    total_created = 0
+    last_data: dict = {}
+    api_path = f"/open-apis/docx/v1/documents/{document_id}/blocks/{document_id}/children"
+
+    for batch_start in range(0, len(blocks), BATCH_SIZE):
+        batch = blocks[batch_start : batch_start + BATCH_SIZE]
+        payload = {
+            "children": batch,
+            "index": -1,  # append to end of document
+        }
+        last_data = _post(api_path, payload)
+        total_created += len(batch)
+        logger.info(
+            "Wrote batch %d–%d (%d blocks) to document %s",
+            batch_start, batch_start + len(batch), len(batch), document_id,
+        )
+        # Respect the 3 edits/sec rate limit if more batches remain
+        if batch_start + BATCH_SIZE < len(blocks):
+            _time.sleep(0.4)
+
+    logger.info("Total %d blocks written to document %s", total_created, document_id)
+    return {"blocks_created": total_created, **last_data.get("data", {})}
 
 
 def _markdown_to_blocks(md: str) -> list[dict]:
