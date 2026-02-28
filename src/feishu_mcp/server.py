@@ -111,6 +111,56 @@ TOOLS: list[Tool] = [
             "required": ["message_id", "content"],
         },
     ),
+    Tool(
+        name="get_message",
+        description="Get the full content and metadata of a single Feishu message. For file/image messages, the returned content JSON contains file_key and file_name which can be used with download_message_file.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string", "description": "Message ID (starts with om_)"},
+            },
+            "required": ["message_id"],
+        },
+    ),
+    Tool(
+        name="get_chat_messages",
+        description="List recent messages in a Feishu chat (group or P2P). Useful for finding file/image messages and their file_key. Returns messages sorted by time.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "chat_id": {"type": "string", "description": "Chat/group ID (starts with oc_)"},
+                "start_time": {"type": "string", "description": "Start time filter (Unix timestamp in seconds), optional"},
+                "end_time": {"type": "string", "description": "End time filter (Unix timestamp in seconds), optional"},
+                "page_size": {"type": "integer", "description": "Number of messages to return (1-50, default 20)", "default": 20},
+                "sort_type": {
+                    "type": "string",
+                    "enum": ["ByCreateTimeAsc", "ByCreateTimeDesc"],
+                    "description": "Sort order, default descending (newest first)",
+                    "default": "ByCreateTimeDesc",
+                },
+            },
+            "required": ["chat_id"],
+        },
+    ),
+    Tool(
+        name="download_message_file",
+        description="Download a file or image attachment from a Feishu chat message to local disk. Use get_message or get_chat_messages first to obtain the message_id and file_key. For file messages, content JSON has {\"file_key\": \"...\", \"file_name\": \"...\"}. Returns the local file path after download.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string", "description": "ID of the message containing the file (starts with om_)"},
+                "file_key": {"type": "string", "description": "File key from the message content JSON"},
+                "file_type": {
+                    "type": "string",
+                    "enum": ["file", "image"],
+                    "description": "Type of resource: 'file' for documents/PDFs, 'image' for images",
+                    "default": "file",
+                },
+                "file_name": {"type": "string", "description": "Desired filename; if empty, auto-detected from response headers"},
+            },
+            "required": ["message_id", "file_key"],
+        },
+    ),
     # ── Calendar ──
     Tool(
         name="get_or_create_group_calendar",
@@ -442,6 +492,19 @@ async def _dispatch(name: str, args: dict) -> Any:
         ),
         "reply_message": lambda: messages.reply_message(
             args["message_id"], args["content"], args.get("msg_type", "text"),
+        ),
+        "get_message": lambda: messages.get_message(args["message_id"]),
+        "get_chat_messages": lambda: messages.get_chat_messages(
+            args["chat_id"],
+            args.get("start_time", ""),
+            args.get("end_time", ""),
+            args.get("page_size", 20),
+            args.get("sort_type", "ByCreateTimeDesc"),
+        ),
+        "download_message_file": lambda: messages.download_message_file(
+            args["message_id"], args["file_key"],
+            args.get("file_type", "file"),
+            args.get("file_name", ""),
         ),
         "send_card_message": lambda: messages.send_card_message(
             args["receive_id_type"], args["receive_id"], args["card"],
