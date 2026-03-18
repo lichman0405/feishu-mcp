@@ -1,0 +1,34 @@
+name: Sync featherflow submodule
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  update-submodule:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout featherflow
+        uses: actions/checkout@v4
+        with:
+          repository: lichman0405/featherflow
+          token: ${{ secrets.FEATHERFLOW_PAT }}
+          submodules: false
+
+      - name: Update feishu-mcp submodule pointer
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git submodule update --init mcps/feishu-mcp
+
+          cd mcps/feishu-mcp
+          git fetch origin main
+          git checkout main
+          git pull origin main
+          cd ../..
+
+          git add mcps/feishu-mcp
+          git diff --staged --quiet || git commit -m "chore: update feishu-mcp submodule to latest main"
+          git push
