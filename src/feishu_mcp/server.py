@@ -315,7 +315,7 @@ TOOLS: list[Tool] = [
         inputSchema={
             "type": "object",
             "properties": {
-                "document_id": {"type": "string", "description": "Document ID"},
+                "document_id": {"type": "string", "description": "Docx document_id, or a wiki node_token for a wiki-mounted docx"},
                 "markdown_content": {"type": "string", "description": "Content in Markdown format"},
             },
             "required": ["document_id", "markdown_content"],
@@ -353,7 +353,7 @@ TOOLS: list[Tool] = [
         inputSchema={
             "type": "object",
             "properties": {
-                "document_id": {"type": "string"},
+                "document_id": {"type": "string", "description": "Docx document_id, or a wiki node_token for a wiki-mounted docx"},
                 "file_token": {"type": "string", "description": "file_token returned by upload_file"},
                 "file_name": {"type": "string", "description": "Display name of the file"},
             },

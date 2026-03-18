@@ -2,7 +2,8 @@
 tests/test_documents.py — unit tests for the cloud document tool
 """
 import pytest
-from feishu_mcp.tools.documents import _markdown_to_blocks
+from feishu_mcp.tools import documents
+from feishu_mcp.tools.documents import FeishuAPIError, _format_feishu_api_error, _markdown_to_blocks
 
 
 def test_markdown_heading():
@@ -78,3 +79,73 @@ result = 42
     assert 12 in types  # bullet
     assert 22 in types  # divider
     assert 14 in types  # code
+
+
+def test_docx_not_found_error_includes_token_hint():
+    path = "/open-apis/docx/v1/documents/Zf0WdSbV5ohHGExF1EOcB14CnTe/blocks/Zf0WdSbV5ohHGExF1EOcB14CnTe/children"
+    message = _format_feishu_api_error(path, {"code": 1770002, "msg": "not found"})
+
+    assert "document_id was not found" in message
+    assert "wiki node_token" in message
+    assert "obj_token" in message
+
+
+def test_resolve_docx_document_id_from_wiki_node(monkeypatch):
+    def fake_get(path, params=None):
+        assert path == "/open-apis/wiki/v2/spaces/get_node"
+        assert params == {"token": "wiki_node_token", "obj_type": "wiki"}
+        return {
+            "data": {
+                "node": {
+                    "obj_type": "docx",
+                    "obj_token": "doxcnResolvedToken",
+                }
+            }
+        }
+
+    monkeypatch.setattr(documents, "_get", fake_get)
+
+    assert documents._resolve_docx_document_id("wiki_node_token") == "doxcnResolvedToken"
+
+
+def test_write_document_markdown_retries_with_resolved_docx_token(monkeypatch):
+    calls = []
+
+    def fake_post(path, payload, params=None):
+        calls.append(path)
+        if len(calls) == 1:
+            raise FeishuAPIError(path, {"code": 1770002, "msg": "not found"})
+        assert path == "/open-apis/docx/v1/documents/doxcnResolvedToken/blocks/doxcnResolvedToken/children"
+        return {"data": {"children": [{"block_id": "blk_1"}]}}
+
+    def fake_resolve(token):
+        assert token == "wiki_node_token"
+        return "doxcnResolvedToken"
+
+    monkeypatch.setattr(documents, "_post", fake_post)
+    monkeypatch.setattr(documents, "_resolve_docx_document_id", fake_resolve)
+
+    result = documents.write_document_markdown("wiki_node_token", "# Title")
+
+    assert calls[0] == "/open-apis/docx/v1/documents/wiki_node_token/blocks/wiki_node_token/children"
+    assert result["document_id"] == "doxcnResolvedToken"
+    assert result["blocks_created"] == 1
+
+
+def test_insert_file_block_retries_with_resolved_docx_token(monkeypatch):
+    calls = []
+
+    def fake_post(path, payload, params=None):
+        calls.append(path)
+        if len(calls) == 1:
+            raise FeishuAPIError(path, {"code": 1770002, "msg": "not found"})
+        return {"data": {"children": [{"block_id": "blk_file"}]}}
+
+    monkeypatch.setattr(documents, "_post", fake_post)
+    monkeypatch.setattr(documents, "_resolve_docx_document_id", lambda token: "doxcnResolvedToken")
+
+    result = documents.insert_file_block("wiki_node_token", "file_token_1", "report.pdf")
+
+    assert calls[0] == "/open-apis/docx/v1/documents/wiki_node_token/blocks/wiki_node_token/children"
+    assert calls[1] == "/open-apis/docx/v1/documents/doxcnResolvedToken/blocks/doxcnResolvedToken/children"
+    assert result["document_id"] == "doxcnResolvedToken"

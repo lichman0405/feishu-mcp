@@ -30,6 +30,83 @@ logger = logging.getLogger(__name__)
 FEISHU_BASE_URL = "https://open.feishu.cn"
 
 
+class FeishuAPIError(RuntimeError):
+    def __init__(self, path: str, data: dict):
+        self.path = path
+        self.data = data
+        self.code = data.get("code")
+        self.api_message = data.get("msg")
+        super().__init__(_format_feishu_api_error(path, data))
+
+
+def _format_feishu_api_error(path: str, data: dict) -> str:
+    message = f"Feishu API error [{path}]: code={data.get('code')}, msg={data.get('msg')}"
+
+    if data.get("code") == 1770002 and "/open-apis/docx/v1/documents/" in path:
+        message += (
+            " | The provided document_id was not found. Make sure you are passing the"
+            " docx document_id, not a wiki node_token or another resource token."
+            " For wiki-mounted docs, resolve the node via Wiki APIs and use the returned"
+            " obj_token when obj_type=docx."
+        )
+
+    return message
+
+
+def _docx_children_path(document_id: str) -> str:
+    return f"/open-apis/docx/v1/documents/{document_id}/blocks/{document_id}/children"
+
+
+def _resolve_docx_document_id(token: str) -> str:
+    last_error: FeishuAPIError | None = None
+
+    for params in ({"token": token, "obj_type": "wiki"}, {"token": token}):
+        try:
+            data = _get("/open-apis/wiki/v2/spaces/get_node", params=params)
+            node = data.get("data", {}).get("node", {})
+            obj_type = node.get("obj_type")
+            obj_token = node.get("obj_token")
+
+            if obj_type != "docx":
+                raise RuntimeError(
+                    f"Token '{token}' resolved via Wiki API, but points to obj_type={obj_type!r} instead of 'docx'."
+                )
+            if not obj_token:
+                raise RuntimeError(
+                    f"Token '{token}' resolved via Wiki API, but no obj_token was returned for the mounted docx resource."
+                )
+            return obj_token
+        except FeishuAPIError as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+
+    raise RuntimeError(f"Failed to resolve token '{token}' to a docx document_id via Wiki API.")
+
+
+def _append_document_children(document_id: str, payload: dict) -> tuple[dict, str]:
+    api_path = _docx_children_path(document_id)
+    try:
+        return _post(api_path, payload), document_id
+    except FeishuAPIError as exc:
+        if exc.code != 1770002:
+            raise
+
+    resolved_document_id = _resolve_docx_document_id(document_id)
+    if resolved_document_id == document_id:
+        raise RuntimeError(
+            f"Token '{document_id}' could not be resolved to a different docx document_id after a docx not found response."
+        )
+
+    logger.info(
+        "Resolved wiki node token %s to docx document_id %s for document write",
+        document_id,
+        resolved_document_id,
+    )
+    return _post(_docx_children_path(resolved_document_id), payload), resolved_document_id
+
+
 # ─────────────────────────────────────────
 # Internal HTTP helpers
 # ─────────────────────────────────────────
@@ -45,9 +122,7 @@ def _post(path: str, payload: dict, params: dict | None = None) -> dict:
         resp.raise_for_status()
         raise RuntimeError(f"Feishu API [{path}]: HTTP {resp.status_code}, non-JSON body")
     if data.get("code") != 0:
-        raise RuntimeError(
-            f"Feishu API error [{path}]: code={data.get('code')}, msg={data.get('msg')}"
-        )
+        raise FeishuAPIError(path, data)
     if resp.status_code >= 400:
         raise RuntimeError(
             f"Feishu API [{path}]: HTTP {resp.status_code}, body={data}"
@@ -65,9 +140,7 @@ def _patch(path: str, payload: dict) -> dict:
         resp.raise_for_status()
         raise RuntimeError(f"Feishu API [{path}]: HTTP {resp.status_code}, non-JSON body")
     if data.get("code") != 0:
-        raise RuntimeError(
-            f"Feishu API error [{path}]: code={data.get('code')}, msg={data.get('msg')}"
-        )
+        raise FeishuAPIError(path, data)
     if resp.status_code >= 400:
         raise RuntimeError(
             f"Feishu API [{path}]: HTTP {resp.status_code}, body={data}"
@@ -86,9 +159,7 @@ def _get(path: str, params: dict | None = None) -> dict:
         resp.raise_for_status()
         raise RuntimeError(f"Feishu API [{path}]: HTTP {resp.status_code}, non-JSON body")
     if data.get("code") != 0:
-        raise RuntimeError(
-            f"Feishu API error [{path}]: code={data.get('code')}, msg={data.get('msg')}"
-        )
+        raise FeishuAPIError(path, data)
     if resp.status_code >= 400:
         raise RuntimeError(
             f"Feishu API [{path}]: HTTP {resp.status_code}, body={data}"
@@ -158,7 +229,7 @@ def write_document_markdown(document_id: str, markdown_content: str) -> dict:
     - --- (→ DividerBlock)
 
     Args:
-        document_id: Document ID
+        document_id: Docx document_id, or a wiki node_token for a wiki-mounted docx
         markdown_content: Markdown string
 
     Returns:
@@ -176,7 +247,7 @@ def write_document_markdown(document_id: str, markdown_content: str) -> dict:
     BATCH_SIZE = 50
     total_created = 0
     last_data: dict = {}
-    api_path = f"/open-apis/docx/v1/documents/{document_id}/blocks/{document_id}/children"
+    effective_document_id = document_id
 
     for batch_start in range(0, len(blocks), BATCH_SIZE):
         batch = blocks[batch_start : batch_start + BATCH_SIZE]
@@ -184,18 +255,22 @@ def write_document_markdown(document_id: str, markdown_content: str) -> dict:
             "children": batch,
             "index": -1,  # append to end of document
         }
-        last_data = _post(api_path, payload)
+        last_data, effective_document_id = _append_document_children(effective_document_id, payload)
         total_created += len(batch)
         logger.info(
             "Wrote batch %d–%d (%d blocks) to document %s",
-            batch_start, batch_start + len(batch), len(batch), document_id,
+            batch_start, batch_start + len(batch), len(batch), effective_document_id,
         )
         # Respect the 3 edits/sec rate limit if more batches remain
         if batch_start + BATCH_SIZE < len(blocks):
             _time.sleep(0.4)
 
-    logger.info("Total %d blocks written to document %s", total_created, document_id)
-    return {"blocks_created": total_created, **last_data.get("data", {})}
+    logger.info("Total %d blocks written to document %s", total_created, effective_document_id)
+    return {
+        "document_id": effective_document_id,
+        "blocks_created": total_created,
+        **last_data.get("data", {}),
+    }
 
 
 def _markdown_to_blocks(md: str) -> list[dict]:
@@ -525,7 +600,7 @@ def insert_file_block(
     Insert a downloadable file block at the end of a document.
 
     Args:
-        document_id: Document ID
+        document_id: Docx document_id, or a wiki node_token for a wiki-mounted docx
         file_token: Token of the already-uploaded file
         file_name: Display name of the file in the document
 
@@ -544,12 +619,9 @@ def insert_file_block(
         ],
         "index": -1,
     }
-    data = _post(
-        f"/open-apis/docx/v1/documents/{document_id}/blocks/{document_id}/children",
-        payload,
-    )
-    logger.info("File block inserted: document_id=%s, file=%s", document_id, file_name)
-    return data.get("data", {})
+    data, effective_document_id = _append_document_children(document_id, payload)
+    logger.info("File block inserted: document_id=%s, file=%s", effective_document_id, file_name)
+    return {"document_id": effective_document_id, **data.get("data", {})}
 
 
 # ─────────────────────────────────────────
