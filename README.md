@@ -316,10 +316,10 @@ docker compose logs -f feishu-listener
 | `list_tasks` | Query the task list |
 | `create_folder` | Create a folder in Drive |
 | `create_document` | Create a Feishu cloud document |
-| `write_document_markdown` | Write Markdown content into a document |
+| `write_document_markdown` | Write Markdown content into a document (accepts docx `document_id` or wiki `node_token`) |
 | `upload_file` | Upload a file to Feishu Drive |
 | `upload_file_and_share` | Upload a file and return a shareable link in one step (upload + set permission + get link) |
-| `insert_file_block` | Insert a file attachment block into a document |
+| `insert_file_block` | Insert a file attachment block into a document (accepts docx `document_id` or wiki `node_token`) |
 | `set_doc_permission` | Add collaborators to a document (supports users or groups) |
 | `set_doc_public_access` | Set document public access / link sharing permission |
 | `get_share_link` | Get the sharing link for a document |
@@ -342,6 +342,7 @@ Enable the following permissions in your app's management page on the [Feishu De
 | `calendar:calendar` | Calendar read/write |
 | `drive:drive` | Drive/document read/write |
 | `docx:document` | Cloud document content editing |
+| `wiki:wiki:readonly` | Resolve wiki node tokens to docx document IDs (required if documents are wiki-mounted) |
 
 Path to enable permissions: App Management → Permission Management → Enable the above permissions → Publish version.
 
@@ -351,7 +352,7 @@ Path to enable permissions: App Management → Permission Management → Enable 
 
 ```bash
 # Run unit tests
-pytest tests/unit/ -v
+pytest tests/ -v
 
 # Run integration tests (requires real Feishu credentials)
 pytest tests/integration/ -v
