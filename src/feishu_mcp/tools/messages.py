@@ -24,11 +24,32 @@ logger = logging.getLogger(__name__)
 FEISHU_BASE_URL = "https://open.feishu.cn"
 
 
+def _raise_for_feishu_status(resp: httpx.Response, path: str) -> None:
+    """Raise an informative error including the Feishu response body on HTTP failure.
+
+    httpx's default ``raise_for_status`` discards the body, which hides the
+    real cause (e.g. ``msg_size too large``, ``invalid receive_id``). This
+    helper surfaces the JSON ``code``/``msg`` (or raw text) so callers and
+    upstream agents can act on it.
+    """
+    if resp.is_success:
+        return
+    detail: str
+    try:
+        body = resp.json()
+        detail = f"code={body.get('code')}, msg={body.get('msg')}"
+    except Exception:
+        detail = (resp.text or "")[:500]
+    raise RuntimeError(
+        f"Feishu API HTTP {resp.status_code} [{path}]: {detail}"
+    )
+
+
 def _post(path: str, payload: dict, use_user_token: bool = False) -> dict:
     url = f"{FEISHU_BASE_URL}{path}"
     with httpx.Client(timeout=15) as client:
         resp = client.post(url, headers=get_auth_headers(use_user_token), json=payload)
-        resp.raise_for_status()
+        _raise_for_feishu_status(resp, path)
     data = resp.json()
     if data.get("code") != 0:
         raise RuntimeError(f"Feishu API error [{path}]: code={data['code']}, msg={data.get('msg')}")
@@ -66,7 +87,7 @@ def send_message(
         resp = client.post(
             url, headers=get_auth_headers(), params=params, json=payload
         )
-        resp.raise_for_status()
+        _raise_for_feishu_status(resp, "/open-apis/im/v1/messages")
     data = resp.json()
     if data.get("code") != 0:
         raise RuntimeError(
